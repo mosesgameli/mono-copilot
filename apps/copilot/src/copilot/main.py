@@ -1,6 +1,21 @@
-from agents import Agent, Runner
+from agents import Runner
+from agents.run import RunConfig
+from agents.sandbox import (
+    Dir,
+    Manifest,
+    SandboxAgent,
+    SandboxRunConfig,
+)
+from agents.sandbox.capabilities import Capabilities, Skills
+from agents.sandbox.entries.base import BaseEntry
+from agents.sandbox.entries import File, GitRepo
+from agents.sandbox.manifest import Environment
+from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxClientOptions
+from docker import from_env as docker_from_env
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+import os
+from pathlib import Path
 from pydantic import BaseModel
 import uvicorn
 
@@ -8,9 +23,74 @@ load_dotenv()
 
 app = FastAPI()
 
-agent = Agent(
-    name="History Tutor",
-    instructions="You answer history questions clearly and concisely.",
+
+def _runtime_shim(binary: str) -> File:
+    binary_path = f"/usr/local/bin/{binary}"
+    content = (
+        "#!/bin/sh\n"
+        f"if [ -x {binary_path!r} ]; then\n"
+        f"  exec {binary_path!r} \"$@\"\n"
+        "fi\n"
+        f"echo '{binary} is not installed in this Docker sandbox image.' >&2\n"
+        "echo 'Set SANDBOX_DOCKER_IMAGE to an image that includes uv and bun.' >&2\n"
+        "exit 127\n"
+    )
+    return File(content=content.encode("utf-8"))
+
+
+def _docker_image() -> str:
+    return os.getenv("SANDBOX_DOCKER_IMAGE", "mono-copilot-sandbox:latest")
+
+
+def _skills_repo() -> GitRepo:
+    return GitRepo(
+        repo=os.getenv("SANDBOX_SKILLS_REPO", "mosesgameli/myagentskills"),
+        ref=os.getenv("SANDBOX_SKILLS_REF", "main"),
+        subpath=os.getenv("SANDBOX_SKILLS_SUBPATH", ".agents/skills"),
+    )
+
+
+def _sandbox_manifest() -> Manifest:
+    entries: dict[str | Path, BaseEntry] = {
+        "tools/": Dir(),
+        "tools/bin/": Dir(),
+        "tools/bin/uv": _runtime_shim("uv"),
+        "tools/bin/bun": _runtime_shim("bun"),
+        "tmp/": Dir(),
+        ".bun/": Dir(),
+    }
+
+    return Manifest(
+        entries=entries,
+        environment=Environment(
+            value={
+                "PATH": "tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "TMPDIR": "tmp",
+                "BUN_INSTALL": ".bun",
+                "BUN_TMPDIR": "tmp",
+            }
+        ),
+    )
+
+agent = SandboxAgent(
+    name="Sandbox Coding Agent",
+    instructions=(
+        "You are a coding agent operating inside a sandbox workspace. "
+        "Inspect the workspace before making assumptions. "
+        "When a user asks you to run a one-off script, execute it in the sandbox and report the result. "
+        "Runtime policy: run Python scripts with './tools/bin/uv run python <script_or_flags>' and run JavaScript/TypeScript with './tools/bin/bun' (for example './tools/bin/bun run', './tools/bin/bun <file>.js', or './tools/bin/bun <file>.ts'). "
+        "Prefer these runtimes over direct python/node execution unless the command fails and you explain why. "
+        "For executed commands, include: the exact command, exit status, stdout, and stderr in your response. "
+        "Keep answers concise, factual, and focused on implementation details."
+    ),
+    default_manifest=_sandbox_manifest(),
+    capabilities=[
+        *Capabilities.default(),
+        Skills(
+            from_=_skills_repo(),
+            skills_path=os.getenv("SANDBOX_SKILLS_PATH", ".agents/skills"),
+        ),
+    ],
 )
 
 
@@ -40,10 +120,46 @@ def read_root() -> dict[str, str]:
 
 @app.post("/agent", response_model=AgentResponse)
 async def run_agent(request: AgentRequest) -> AgentResponse:
+    docker_client = None
+    sandbox = None
+
     try:
-        result = await Runner.run(agent, request.user_input)
+        docker_client = DockerSandboxClient(docker_from_env())
+        sandbox = await docker_client.create(
+            manifest=_sandbox_manifest(),
+            options=DockerSandboxClientOptions(image=_docker_image()),
+        )
+        async with sandbox:
+            preflight = await sandbox.exec("./tools/bin/uv --version && ./tools/bin/bun --version", shell=True)
+            if preflight.exit_code != 0:
+                stderr = preflight.stderr.decode("utf-8", errors="replace").strip()
+                raise HTTPException(
+                    status_code=500,
+                    detail=(
+                        "Docker sandbox image is missing uv and/or bun. "
+                        "Set SANDBOX_DOCKER_IMAGE to an image that includes both runtimes (for example mono-copilot-sandbox:latest). "
+                        f"Preflight error: {stderr}"
+                    ),
+                )
+
+            result = await Runner.run(
+                agent,
+                request.user_input,
+                run_config=RunConfig(
+                    sandbox=SandboxRunConfig(session=sandbox),
+                    workflow_name="Copilot docker sandbox coding agent",
+                ),
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Agent execution failed: {exc}") from exc
+    finally:
+        if docker_client is not None and sandbox is not None:
+            try:
+                await docker_client.delete(sandbox)
+            except Exception:
+                pass
 
     return AgentResponse(response=str(result.final_output))
 
