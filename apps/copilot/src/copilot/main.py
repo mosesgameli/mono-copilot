@@ -15,7 +15,6 @@ from agents.sandbox.sandboxes.docker import DockerSandboxClient, DockerSandboxCl
 from docker import from_env as docker_from_env
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
-import os
 from pathlib import Path
 from pydantic import BaseModel
 import uvicorn
