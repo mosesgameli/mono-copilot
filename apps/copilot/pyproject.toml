@@ -13,9 +13,8 @@ dependencies = [
 ]
 
 [project.scripts]
-copilot-server = "copilot.main:run"
-copilot-dev = "copilot.main:dev"
 mono = "copilot.mono:main"
+start = "copilot.main:run"
 
 [tool.uv.sources]
 runtime = { workspace = true }
