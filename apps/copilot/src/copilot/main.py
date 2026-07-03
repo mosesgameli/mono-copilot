@@ -1,3 +1,4 @@
+import os
 from agents import Agent, Runner
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -47,13 +48,15 @@ async def run_agent(request: AgentRequest) -> AgentResponse:
 
     return AgentResponse(response=str(result.final_output))
 
-
 def run() -> None:
-    uvicorn.run("copilot.main:app", host="127.0.0.1", port=8000, reload=False)
+    environment = os.getenv("APP_ENV", "production").lower()
 
-
-def dev() -> None:
-    uvicorn.run("copilot.main:app", host="127.0.0.1", port=8000, reload=True)
+    if environment == "development":
+        print("Running in development mode with hot reload enabled.")
+        uvicorn.run("copilot.main:app", host="127.0.0.1", port=8000, reload=True)
+    else:
+        print("Running in production mode.")
+        uvicorn.run("copilot.main:app", host="0.0.0.0", port=8000, reload=False)
 
 
 if __name__ == "__main__":
