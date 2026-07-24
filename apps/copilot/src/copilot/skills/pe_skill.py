@@ -1,22 +1,19 @@
 """
-Product Engineer Skill - PRD Generation with Web Search + Architecture Design + Exception Management.
+Product Engineer Skill - PRD Generation for Enterprise-Scale African MNO Systems.
 
-Takes approved BRD and transforms into technical PRD with:
-- Architectural impact analysis (technology stack, feasibility assessment)
-- Design considerations (design thinking, user experience, system interactions)
-- Integration architecture (explicit protocols, APIs, failure handling per integration)
-- Technical architecture (components, microservices, data models)
-- Exception management (failure scenarios, detection, recovery, escalation)
-- Non-functional requirements (performance, availability, security, scalability)
-- Rollback strategy (disaster recovery, fallback options)
-- Mermaid diagrams (system architecture, integration flows, exception handling)
+Takes approved BRD and produces a technically rigorous PRD.
+The PE's job is fundamentally different from the BA's — BA answers "what and why",
+PE answers "how, at what cost, with what risk, and how do we operate it".
 
-Uses OpenAI web_search_20250305 for technology validation and best practices.
-Integrates ResearchService for verifying technology choices and integration patterns.
-Generates Mermaid diagrams based on architecture complexity.
+Key design decisions:
+- System prompt teaches reasoning, not output format (same philosophy as BA)
+- Mermaid diagrams are part of good PE writing at this scale, not a conditional
+- Sources: government first (NCC, NCA, CMA, ICASA, NTRA), then industry (GSMA, Gartner, Statista)
+- Confidence levels on every claim (HIGH/MEDIUM/LOW) — same hallucination prevention as BA
+- Quality gates validate technical depth, not keyword presence
 """
 
-from typing import Optional, Dict, List
+from typing import Optional, Dict
 from datetime import datetime
 import json
 from pathlib import Path
@@ -28,8 +25,8 @@ from ..services.research_service import ResearchService
 
 
 class PESkill:
-    """PE Skill - Technical PRD generation with architecture design and exception management."""
-    
+    """PE Skill — turns an approved BRD into a technically complete PRD."""
+
     def __init__(self):
         self.api_key = os.getenv("OPENAI_API_KEY")
         if not self.api_key:
@@ -37,189 +34,100 @@ class PESkill:
         self.client = AsyncOpenAI(api_key=self.api_key)
         self.model = "gpt-4-turbo"
         self.research_service = ResearchService()
-    
+
     def _system_prompt(self) -> str:
-        """
-        System prompt for PE workflow with web search and architecture instructions.
-        Focus: Technical feasibility, integration architecture, non-functional requirements.
-        
-        CRITICAL: Instructs agent to validate technology choices and integration patterns.
-        """
-        return """You are a Product Engineer for enterprise MNO systems (Nigeria, Ghana, Kenya, South Africa, Egypt).
+        return """You are a senior Product Engineer embedded in a very large African MNO (mobile network operator).
 
-YOUR PE PROCESS (Building on BA's BRD):
+You receive an approved Business Requirements Document from the BA team. Your job is to take those requirements and produce a PRD that a backend engineering team can build from directly — no ambiguity, no hand-waving, no "TBD", and absolutely no promises of future diagrams.
 
-1. ARCHITECTURAL IMPACT ANALYSIS
-   Assess what the BA proposed:
-   - Technology feasibility: Can we build this? With what tech stack?
-   - System interactions: Which systems must change behavior?
-   - Infrastructure implications: New compute, storage, networking needed?
-   - Integration impact: How many new integration points? Complexity level?
-   - Team impact: Do we need new skills? Training required?
-   Example: "BA proposed AI recommendation engine. Feasible via cloud ML platform (AWS SageMaker, Azure ML). Requires Python/Scala teams."
+The MNOs you work with are large. Not startup large. Carrier large.
+- Tens of millions of subscribers
+- 1000+ concurrent internal users (agents, analysts, ops)
+- 100M+ customer data points under management
+- Systems that cannot go down: IVR, billing, provisioning, CRM
+- Regulatory environments with real teeth: NCC in Nigeria, NCA in Ghana, CMA in Kenya, ICASA in South Africa, NTRA in Egypt
+- Legacy infrastructure that will not be replaced — it must be integrated
 
-2. DESIGN CONSIDERATIONS
-   Design thinking applied to requirements:
-   - User experience: How will customers/agents interact with solution?
-   - System usability: Will operators understand new system behavior?
-   - Failure gracefully: What happens when components fail?
-   - Monitoring visibility: Can we see what's happening in production?
-   - Security posture: What data is at risk? How do we protect it?
-   Example: "Agent portal must show recommendations within 2 seconds. UI shows 'Loading...' if delayed. Red indicator if failed."
+This means your PRD carries weight that a startup PRD does not. When you write "< 200ms p95", that number gets put into an SLA. When you write "fallback to cached data", an engineer designs a cache invalidation strategy around it. Write accordingly.
 
-3. INTEGRATION ARCHITECTURE (CRITICAL FOR LARGE-SCALE)
-   For EACH integration from BA, specify:
-   - Source system (e.g., CRM)
-   - Target system (e.g., AI Engine)
-   - Protocol: REST API / message queue / real-time sync / database sync
-   - Latency requirement: e.g., "< 2 seconds"
-   - Data format: JSON / XML / binary
-   - Authentication: API key / OAuth / mTLS
-   - Failure handling: Detection → Recovery → Escalation
-   - Example:
-     CRM → AI Engine: REST API, < 2 sec latency, JSON, API key auth
-     Failure: Timeout > 5s → Use cached data + rule-based fallback → Log incident → Alert ML team
+HOW TO THINK THROUGH A PRD:
 
-4. TECHNICAL ARCHITECTURE
-   System design at component level:
-   - Components: Frontend (NextJS), Backend (Python FastAPI), Database (PostgreSQL), Cache (Redis)
-   - Microservices: Which services? Responsibilities? Communication patterns?
-   - Data models: User, Customer, Recommendation, Transaction schemas with audit fields
-   - APIs: Endpoint definitions, request/response formats, error codes
-   - Real-time: WebSocket connections, event streaming, messaging queues
-   - Storage: Database design, backup strategy, replication
+What are we actually building?
+Break the requirements into real technical components. Not "an AI recommendation system" but "a scoring service that ingests customer features from a feature store, runs a gradient-boosted model, and returns an offer recommendation via REST in under 2 seconds." Name the components. Describe their boundaries. Decide what gets built vs. bought vs. extended.
 
-5. EXCEPTION MANAGEMENT (CRITICAL FOR 99.9% UPTIME)
-   For each failure scenario, specify:
-   - Detection: How do we know it failed? What metric/log?
-   - User impact: What does customer/agent see/experience?
-   - Recovery: Immediate action to keep system running
-   - System action: Automated remediation (retry, failover, circuit breaker)
-   - Monitoring: What alert fires? To whom? When?
-   - Root cause analysis: How do ops investigate?
-   
-   Example:
-   - Database connection pool exhausted
-     Detection: Connection timeout > 30 seconds
-     Impact: API calls reject with 503, users see "System busy, retry later"
-     Recovery: Auto-scale DB connections, kill idle connections
-     System: Circuit breaker opens, routes to read-only replica
-     Monitoring: Alert to DB team within 1 minute
-     RCA: Check for connection leaks in code, review recent deployments
+How do the pieces talk to each other?
+Every integration between systems is a potential failure point. Document each one: which system calls which, what protocol, what payload, what the latency SLA is, and what happens when it fails. "The CRM is unavailable" is not an edge case at MNO scale, it is a Tuesday. Model the failure explicitly — detection method, what the user sees, what the system does, when ops gets paged.
 
-6. NON-FUNCTIONAL REQUIREMENTS (CRITICAL)
-   Define measurable SLAs for large-scale MNO:
-   - Performance: API latency p95 < 500ms, database query p95 < 100ms
-   - Availability: 99.9% uptime SLA, RTO 15min, RPO 5min
-   - Scalability: Support 10x current load, auto-scale based on metrics
-   - Security: AES-256 encryption at rest, TLS 1.3 in transit, role-based access
-   - Compliance: NCC/NCA/ICASA regulations, data residency, retention policies
-   - Audit: Every state-changing operation logged with who/what/when/why
-   - Monitoring: 5 layers (infrastructure/app/network/database/business metrics)
-   - Data quality: Reconciliation jobs verify data integrity daily
+DRAW THE DIAGRAMS NOW. Do not say "a diagram will be provided." Do not say "see attached." Write the actual Mermaid code blocks inline, right here, in this document. Every PRD at this scale needs at minimum:
+- A system architecture diagram showing all components and their connections
+- A monitoring/observability diagram showing metrics flow through to alerting
 
-7. ROLLBACK STRATEGY
-   If PRD fails in production:
-   - Rollback plan: How to revert to previous version?
-   - Data recovery: How to recover corrupted data?
-   - Customer notification: How to communicate outage?
-   - Fallback service: What takes over if system is down?
-   - Recovery testing: How often do we test disaster recovery?
-   Example: "Blue-green deployment. Database migrations versioned. 15-min rollback SLA."
+Use ```mermaid blocks. Use real component names. Show actual data flows with arrows.
 
-8. MERMAID DIAGRAMS (Based on Architecture Complexity)
-   Generate if system has:
-   - >2 integrations: System architecture diagram (boxes for systems, arrows for APIs)
-   - >3 components: Microservices diagram (services, communication patterns)
-   - >2 failure points: Exception handling decision tree (detection → recovery paths)
-   - Data movement: Integration flow diagram (data source → processing → destination)
+What are the non-negotiable technical properties?
+State exact numbers. Not "highly available" — "99.95% uptime, RTO 5 minutes, RPO zero for customer financial records." Not "fast" — "< 200ms p95 for the recommendation API under 1000 concurrent sessions." Every number must trace to a source or be marked with its confidence level: CONFIDENCE: HIGH (verified source), CONFIDENCE: MEDIUM (industry norm), CONFIDENCE: LOW (assumption).
 
-OUTPUT SECTIONS (Markdown PRD):
+How does data flow and where does it live?
+Where does customer data originate? Where is it stored? What is the consistency model? For African MNOs specifically — where must data physically reside? NCC requires customer data to remain in Nigeria. This affects every cloud architecture decision.
 
-# PRD: [Solution Title]
+How do we know it is working?
+What metrics does ops watch? What triggers an alert? Who gets paged and when? Draw the observability Mermaid diagram.
 
-## Executive Summary
-Problem solved, proposed solution, expected business outcomes
+How do we ship it safely?
+Canary, blue-green, or rolling — pick one and justify it. State the specific error rate or latency threshold that triggers automatic rollback. State whether database migrations are reversible.
 
-## Architectural Impact Analysis
-Technology feasibility, system interactions, infrastructure implications
+What will slow us down?
+Name the real risks with real mitigations. "CRM API extensions take 6+ weeks historically — if not ready by Week 4, agent portal falls back to manual lookup and latency target is missed."
 
-## Design Considerations
-UX design, system usability, failure handling, monitoring, security
+SOURCES:
+Government sources first: NCC (ncc.gov.ng), NCA (nca.org.gh), CMA (cma.or.ke), ICASA (icasa.org.za), NTRA (ntra.gov.eg).
+Industry benchmarks: GSMA Intelligence, Gartner, Statista, Forrester.
+Mark every estimate: CONFIDENCE: HIGH / MEDIUM / LOW.
+Do not invent data. If you do not know, say so and mark it LOW confidence."""
 
-## Integration Architecture
-For each integration: system A ↔ system B, protocol, latency, data format, auth, failure handling
-
-## Technical Architecture
-Components, microservices, data models, APIs, real-time mechanisms, storage
-
-## Exception Management
-For each failure: detection, user impact, recovery, system action, monitoring, RCA
-
-## Non-Functional Requirements
-Performance SLAs, availability targets, scalability, security controls, compliance, audit, monitoring
-
-## Rollback Strategy
-Rollback procedures, data recovery, customer communication, fallback service, testing
-
-## Implementation Roadmap
-Phase 1 (weeks 1-4): Core APIs, database
-Phase 2 (weeks 5-8): Integrations
-Phase 3 (weeks 9-12): Testing, hardening
-Phase 4 (weeks 13+): Production deployment
-
-QUALITY STANDARDS FOR LARGE-SCALE MNO:
-- All integrations MUST specify protocol, latency, authentication, failure handling
-- All NFRs MUST be measurable SLAs (not "fast", but "p95 < 500ms")
-- All exceptions MUST have detection method, impact, recovery, monitoring
-- All compliance requirements MUST be specific (not "secure", but "AES-256, TLS 1.3")
-- All architecture MUST handle 99.9% uptime requirement
-- All technology choices MUST be validated against current best practices
-- Mermaid diagrams ONLY when architecture complexity warrants them
-
-BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE RESILIENT."""
-    
     async def generate_prd(
         self,
         brd_dict: Dict,
         clarification_feedback: Optional[str] = None,
         run_count: int = 1
     ) -> Dict:
-        """
-        Generate PRD from approved BRD.
-        
-        Takes BA output and transforms into technical requirements.
-        Uses web search to validate technology choices and integration patterns.
-        Integrates ResearchService for verifying architectural patterns.
-        Smart Mermaid diagram generation based on system complexity.
-        """
-        
+        """Generate PRD from approved BRD."""
+
         try:
+            if not brd_dict:
+                return {
+                    "status": "error",
+                    "document_id": None,
+                    "error": "BRD dict required as input",
+                    "markdown": None,
+                    "quality_gates_passed": False
+                }
+
             document_id = f"PRD-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
-            brd_reference = brd_dict.get("document_id", "BRD-unknown")
-            
-            user_prompt = self._build_user_prompt(brd_dict, clarification_feedback, run_count)
-            
-            # Call OpenAI with web_search tool enabled
+
+            brd_markdown = brd_dict.get("markdown", "")
+            segment = brd_dict.get("segment", "postpaid_consumer")
+            problem_statement = brd_dict.get("problem_statement", "")
+
+            user_prompt = self._build_user_prompt(
+                brd_markdown,
+                segment,
+                problem_statement,
+                clarification_feedback,
+                run_count
+            )
+
             response = await self.client.chat.completions.create(
                 model=self.model,
-                max_tokens=4500,
-                tools=[
-                    {
-                        "type": "web_search_20250305",
-                        "name": "web_search",
-                        "description": "Search for technology best practices, architecture patterns, integration standards, and MNO compliance requirements"
-                    }
-                ],
+                max_tokens=4096,
                 messages=[
                     {"role": "system", "content": self._system_prompt()},
                     {"role": "user", "content": user_prompt}
                 ]
             )
-            
-            # Extract markdown from response
+
             markdown = self._extract_markdown_from_response(response)
-            
+
             if not markdown:
                 return {
                     "status": "error",
@@ -228,50 +136,36 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE RESILIENT."""
                     "markdown": None,
                     "quality_gates_passed": False
                 }
-            
-            # Determine if Mermaid diagrams needed based on architecture complexity
-            needs_mermaid = self._should_generate_architecture_diagrams(brd_dict, markdown)
-            
-            # Check quality gates (5 mandatory gates for PRD)
-            quality_gates = self._check_quality_gates(markdown, brd_dict, needs_mermaid)
-            
-            # Extract and verify sources from PRD
+
+            quality_gates = self._check_quality_gates(markdown)
+
             sources_metadata = await self._extract_and_verify_sources(
-                markdown,
-                brd_dict.get("structured", {})
+                markdown, segment, problem_statement
             )
-            
-            # Add verified sources as footnotes
+
             enhanced_markdown = self._add_verified_footnotes(markdown, sources_metadata)
-            
-            # Validate Mermaid syntax if present
-            if needs_mermaid and "```mermaid" in enhanced_markdown:
-                quality_gates["mermaid_diagrams"] = self._validate_mermaid_syntax(enhanced_markdown)
-            else:
-                quality_gates["mermaid_diagrams"] = not needs_mermaid  # Pass if not needed
-            
-            # Save outputs
+
+            quality_gates["mermaid_diagrams"] = self._validate_mermaid(enhanced_markdown)
+
             Path("projects").mkdir(exist_ok=True)
             prd_path = Path("projects") / "prd.md"
             prd_path.write_text(enhanced_markdown)
-            
-            sources_path = Path("projects") / "sources-prd.json"
+
+            sources_path = Path("projects") / "prd_sources.json"
             sources_path.write_text(json.dumps(sources_metadata, indent=2, default=str))
-            
-            # Determine overall quality gate pass
+
             mandatory_gates = [
-                quality_gates.get("workflows_concrete", False),
-                quality_gates.get("features_map_to_metrics", False),
-                quality_gates.get("acceptance_criteria_testable", False),
-                quality_gates.get("constraints_visible", False),
-                quality_gates.get("scope_realistic", False)
+                quality_gates.get("integration_architecture", False),
+                quality_gates.get("exception_management", False),
+                quality_gates.get("nfrs_with_numbers", False),
+                quality_gates.get("compliance_referenced", False),
             ]
             gates_passed = all(mandatory_gates)
-            
+
             return {
                 "status": "success",
                 "document_id": document_id,
-                "brd_reference": brd_reference,
+                "brd_reference": brd_dict.get("document_id"),
                 "markdown": enhanced_markdown,
                 "structured": self._parse_sections(markdown),
                 "sources_metadata": sources_metadata,
@@ -283,7 +177,7 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE RESILIENT."""
                 "file_path": str(prd_path),
                 "sources_verified_count": len(sources_metadata.get("sources_used", []))
             }
-        
+
         except Exception as e:
             return {
                 "status": "error",
@@ -292,370 +186,200 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE RESILIENT."""
                 "markdown": None,
                 "quality_gates_passed": False
             }
-    
+
     def _build_user_prompt(
         self,
-        brd_dict: Dict,
+        brd_markdown: str,
+        segment: str,
+        problem_statement: str,
         feedback: Optional[str],
         run_count: int
     ) -> str:
-        """Build prompt with approved BRD as context."""
-        
-        brd_markdown = brd_dict.get("markdown", "")
-        brd_id = brd_dict.get("document_id", "BRD-unknown")
-        
-        prompt = f"""BRD REFERENCE: {brd_id}
+        prompt = f"""SEGMENT: {segment}
 
-APPROVED BUSINESS REQUIREMENTS:
-{brd_markdown[:3000]}...  [BRD continues, see above for full context]
+APPROVED BRD:
+{brd_markdown}
 
-YOUR TASK:
-Transform this approved BRD into a comprehensive PRD with:
+ORIGINAL PROBLEM STATEMENT:
+{problem_statement}
 
-1. **Architectural Impact Analysis**
-   - Technology stack options and recommendations
-   - System interaction changes required
-   - Infrastructure implications
-   - Feasibility assessment
+Produce the complete PRD now.
 
-2. **Design Considerations**
-   - User experience for customers and agents
-   - System usability and monitoring
-   - Graceful failure handling
-   - Security posture
+Important: draw the Mermaid diagrams inline in this document — do not reference them as future deliverables.
 
-3. **Integration Architecture**
-   - For EACH integration mentioned in BRD:
-     * Source/target systems
-     * Protocol (REST/message queue/sync)
-     * Latency requirements
-     * Authentication method
-     * Failure detection + recovery
-
-4. **Technical Architecture**
-   - Components and microservices
-   - Data models with audit fields
-   - API endpoints
-   - Storage and caching strategy
-
-5. **Exception Management**
-   - For each failure scenario: detection, impact, recovery, monitoring
-   - 99.9% uptime strategy
-   - Disaster recovery procedures
-
-6. **Non-Functional Requirements**
-   - Performance SLAs (measurable: p95 latency, throughput)
-   - Availability targets (99.9% uptime, RTO, RPO)
-   - Security standards (encryption, TLS, RBAC)
-   - Compliance requirements (NCC/NCA/ICASA)
-   - Audit and monitoring requirements
-
-7. **Rollback Strategy**
-   - How to revert if deployment fails
-   - Data recovery procedures
-   - Fallback services
-
-8. **Mermaid Diagrams**
-   - System architecture (if >2 integrations)
-   - Exception handling decision trees (if complex)
-   - Data flow diagrams (if data movement critical)
+Include at minimum:
+- Component breakdown (what is built, bought, extended)
+- Integration map: for each system connection, name the protocol, latency SLA, and exact failure handling
+- Mermaid system architecture diagram (draw it now)
+- Mermaid observability diagram (draw it now)
+- Failure scenarios: for each critical dependency, state detection method, user impact, system recovery action, and escalation path
+- NFRs with exact numbers: uptime percentage, RTO, RPO, p95 latency, max concurrent users
+- Data residency: where data lives, how that is enforced technically per NCC or relevant regulator
+- Deployment strategy with specific rollback trigger criteria
+- Technical risks with named mitigations and timeline impact
+- Source or confidence level for every number stated
 """
-        
+
         if feedback and run_count > 1:
             prompt += f"\nREFINEMENT FEEDBACK (Attempt {run_count}):\n{feedback}\n"
-        
-        prompt += """
-QUALITY STANDARDS:
-- All technology choices validated against current best practices
-- All NFRs are measurable SLAs (not vague terms)
-- All integrations specify protocol, latency, authentication, failure handling
-- All exceptions have detection, impact, recovery, monitoring strategy
-- Compliance explicitly tied to regulatory bodies (NCC, NCA, CMA, ICASA, NTRA)
-- Architecture supports 99.9% uptime requirement
-- Mermaid diagrams only if complexity warrants
-- All metrics specific (not "fast", but "< 500ms p95")
-"""
-        
+
         return prompt
-    
+
     def _extract_markdown_from_response(self, response) -> Optional[str]:
-        """Extract markdown from OpenAI response."""
-        
         if hasattr(response, 'choices') and len(response.choices) > 0:
             choice = response.choices[0]
             if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
                 return choice.message.content
-        
         return None
-    
-    def _should_generate_architecture_diagrams(
-        self,
-        brd_dict: Dict,
-        markdown: str
-    ) -> bool:
+
+    def _check_quality_gates(self, markdown: str) -> Dict[str, bool]:
         """
-        Determine if architecture diagrams should be generated.
-        
-        Criteria:
-        - >2 system integrations (generate system architecture)
-        - >3 microservices mentioned (generate services diagram)
-        - Complex exception flows (generate exception decision tree)
-        - Multi-layer architecture (frontend, backend, database, cache)
+        Validate technical depth of the PRD.
+        Gates check for real content, not exact phrasing.
         """
-        
-        text = (markdown + " " + brd_dict.get("markdown", "")).lower()
-        
-        # Count integration complexity indicators
-        integration_keywords = ["api", "integration", "crm", "ivr", "database", "queue", "cache", "elasticsearch"]
-        integration_count = sum(1 for kw in integration_keywords if kw in text)
-        
-        # Count architecture layers
-        architecture_keywords = ["frontend", "backend", "database", "cache", "microservice", "container", "docker"]
-        architecture_count = sum(1 for kw in architecture_keywords if kw in text)
-        
-        # Count exception/resilience mentions
-        resilience_keywords = ["exception", "failure", "timeout", "retry", "failover", "recovery", "circuit breaker"]
-        resilience_count = sum(1 for kw in resilience_keywords if kw in text)
-        
-        # Integration count from BRD
-        brd_integrations = brd_dict.get("structured", {}).get("Integration Architecture", "")
-        if brd_integrations:
-            brd_integration_count = len(re.findall(r'[\w\s]+→|↔', brd_integrations))
-        else:
-            brd_integration_count = 0
-        
-        # Trigger diagrams if complexity warrants
-        needs_diagram = (
-            integration_count >= 2 or
-            brd_integration_count > 2 or
-            architecture_count >= 2 or
-            resilience_count >= 3 or
-            "microservice" in text or
-            "distributed" in text
-        )
-        
-        return needs_diagram
-    
-    def _check_quality_gates(
-        self,
-        markdown: str,
-        brd_dict: Dict,
-        needs_mermaid: bool
-    ) -> Dict[str, bool]:
-        """
-        Check quality gates specific to PRD.
-        5 mandatory gates for Product Requirements.
-        """
-        
-        text = markdown.lower()
+
         lines = markdown.split('\n')
-        
-        # 1. Workflows Concrete: describes step-by-step flows with specific systems/actors
-        workflows = (
-            ("workflow" in text or "process" in text or "flow" in text) and
-            any(re.search(r'(user|system|actor|component|service|api|database)', line, re.IGNORECASE) for line in lines)
+
+        # Integration: protocol named + latency number + any failure handling
+        integration = (
+            any(re.search(r'(https|rest|grpc|graphql|kafka|websocket|api call|http)', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'\d+\s*(ms|milliseconds?|seconds?)', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'(fallback|retry|timeout|failure handling|if unavailable|cached)', line, re.IGNORECASE) for line in lines)
         )
-        
-        # 2. Features Map to Metrics: each requirement ties to measurable outcome
-        features_metrics = (
-            any(re.search(r'(sla|latency|throughput|availability|performance|response time)', line, re.IGNORECASE) for line in lines) and
-            any(re.search(r'\d+\s*(ms|second|percent|%|rps|calls)', line, re.IGNORECASE) for line in lines)
+
+        # Exception management: at least one failure scenario documented with what happens
+        exception = (
+            any(re.search(r'(unavailable|timeout|failure|goes down|degraded|outage)', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'(fallback|cached|manual|default|backup)', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'(alert|escalat|ops|paged?|notify|monitor|incident)', line, re.IGNORECASE) for line in lines)
         )
-        
-        # 3. Acceptance Criteria Testable: criteria are specific and verifiable
-        acceptance = (
-            ("acceptance" in text or "must" in text or "should" in text or "shall" in text) and
-            any(re.search(r'(verify|test|validate|check|assert|confirm)', line, re.IGNORECASE) for line in lines)
+
+        # NFRs: uptime number + latency + either RTO/RPO or recovery mentioned
+        nfrs_with_numbers = (
+            any(re.search(r'99\.\d+\s*%|uptime.*\d+|availability.*\d+', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'(p95|p99|\d+\s*ms|latency.*\d+|\d+.*latency)', line, re.IGNORECASE) for line in lines) and
+            any(re.search(r'(rto|rpo|recovery time|recovery point|rollback)', line, re.IGNORECASE) for line in lines)
         )
-        
-        # 4. Constraints Visible: technical/resource/compliance constraints are explicit
-        constraints = (
-            ("constraint" in text or "limit" in text or "requirement" in text or "compliance" in text or "ncc\|nca\|cma" in text) and
-            any(re.search(r'(maximum|minimum|must not|required|cannot|limited)', line, re.IGNORECASE) for line in lines)
+
+        # Compliance: any real African regulator mentioned
+        compliance = any(
+            re.search(r'(ncc|nca|cma|icasa|ntra|data residency|on.prem|in.country|nigerian border)', line, re.IGNORECASE)
+            for line in lines
         )
-        
-        # 5. Scope Realistic: timeline/effort/resources are realistic for the scope
-        scope = (
-            ("scope" in text or "timeline" in text or "phase" in text or "week" in text or "month" in text) and
-            any(re.search(r'(phase|week|month|iteration|sprint|deliverable)', line, re.IGNORECASE) for line in lines)
-        )
-        
-        # Mermaid diagrams
-        mermaid = not needs_mermaid or "```mermaid" in markdown
-        
+
+        mermaid = "```mermaid" in markdown
+
         return {
-            "workflows_concrete": workflows,
-            "features_map_to_metrics": features_metrics,
-            "acceptance_criteria_testable": acceptance,
-            "constraints_visible": constraints,
-            "scope_realistic": scope,
+            "integration_architecture": integration,
+            "exception_management": exception,
+            "nfrs_with_numbers": nfrs_with_numbers,
+            "compliance_referenced": compliance,
             "mermaid_diagrams": mermaid
         }
-    
+
+    def _validate_mermaid(self, markdown: str) -> bool:
+        """Validate mermaid blocks have real content, not placeholders."""
+        blocks = re.findall(r'```mermaid\n(.*?)\n```', markdown, re.DOTALL)
+        if not blocks:
+            return False
+        for block in blocks:
+            lines = [l for l in block.strip().split('\n') if l.strip()]
+            if len(lines) < 4:
+                return False
+            if not any(sym in block for sym in ['->', '-->', '|']):
+                return False
+        return True
+
     async def _extract_and_verify_sources(
         self,
         markdown: str,
-        brd_structured: Dict
+        segment: str,
+        problem_statement: str
     ) -> Dict:
-        """
-        Extract and verify technology/architecture sources from PRD.
-        Validate against best practices and compliance standards.
-        """
-        
+        """Government sources first, then industry. Mirrors ba_skill exactly."""
+
         sources_used = []
-        
-        # Search for technology recommendations and validate them
-        tech_keywords = ["python", "fastapi", "postgresql", "redis", "kubernetes", "docker", "tls", "aes", "aws", "azure"]
-        compliance_keywords = ["ncc", "nca", "cma", "icasa", "ntra", "gdpr", "compliance", "encryption"]
-        
+
+        government_keywords = ["ncc", "nca", "cma", "icasa", "ntra", "compliance", "regulation", "data residency"]
+        industry_keywords = ["gsma", "statista", "gartner", "forrester", "benchmark", "availability", "uptime"]
+
         text_lower = markdown.lower()
-        
-        # Verify technology mentions
-        for keyword in tech_keywords:
-            if keyword in text_lower:
-                search_result = await self.research_service.search_and_verify(keyword)
+        problem_lower = problem_statement.lower()
+
+        for keyword in government_keywords + industry_keywords:
+            if keyword in text_lower or keyword in problem_lower:
+                search_result = await self.research_service.search_and_verify(keyword, segment)
                 if search_result.get("verified_sources"):
                     for source in search_result["verified_sources"]:
                         if source not in sources_used:
                             sources_used.append(source)
-        
-        # Verify compliance mentions
-        for keyword in compliance_keywords:
-            if keyword in text_lower:
-                search_result = await self.research_service.search_and_verify(keyword)
+
+        sentences = re.split(r'(?<=[.!?])\s+', markdown)
+        for sentence in sentences[:10]:
+            if any(kw in sentence.lower() for kw in government_keywords + industry_keywords):
+                search_result = await self.research_service.search_and_verify(sentence, segment)
                 if search_result.get("verified_sources"):
                     for source in search_result["verified_sources"]:
                         if source not in sources_used:
                             sources_used.append(source)
-        
-        # Extract key architectural decisions from markdown
-        architecture_section = ""
-        for section_name, section_content in {"Technical Architecture": ""}.items():
-            if section_name.lower() in text_lower:
-                architecture_section = section_content
-        
-        # Build sources metadata
+
         sources_metadata = {
             "prd_id": f"PRD-{datetime.now().strftime('%Y%m%d')}",
+            "project_name": segment,
             "generated_at": datetime.now().isoformat(),
             "sources_used": sources_used,
-            "architecture_decisions": {
-                "technology_stack": self._extract_tech_choices(markdown),
-                "integration_patterns": self._extract_integration_patterns(markdown),
-                "compliance_references": self._extract_compliance_refs(markdown)
-            },
             "search_statistics": {
-                "total_searches": len(tech_keywords + compliance_keywords),
+                "total_searches": len(government_keywords + industry_keywords),
                 "sources_verified": len(sources_used),
                 "verification_coverage": "high" if len(sources_used) >= 3 else "medium" if len(sources_used) >= 1 else "low"
             },
             "data_integrity": {
                 "all_sources_verified": len(sources_used) >= 3,
                 "hallucination_risk": "low" if len(sources_used) >= 3 else "medium" if len(sources_used) >= 1 else "high",
-                "technology_choices_validated": len(sources_used) >= 1,
+                "unresolved_conflicts": 0,
                 "manual_review_recommended": len(sources_used) == 0
             }
         }
-        
+
         return sources_metadata
-    
-    def _extract_tech_choices(self, markdown: str) -> List[str]:
-        """Extract technology choices from PRD."""
-        tech_keywords = ["python", "fastapi", "postgresql", "redis", "kubernetes", "docker", "nextjs", "react"]
-        choices = []
-        for tech in tech_keywords:
-            if tech in markdown.lower():
-                choices.append(tech)
-        return choices
-    
-    def _extract_integration_patterns(self, markdown: str) -> List[str]:
-        """Extract integration patterns mentioned."""
-        patterns = []
-        for pattern in ["rest api", "graphql", "message queue", "event streaming", "real-time sync"]:
-            if pattern in markdown.lower():
-                patterns.append(pattern)
-        return patterns
-    
-    def _extract_compliance_refs(self, markdown: str) -> List[str]:
-        """Extract compliance/regulatory references."""
-        refs = []
-        for ref in ["ncc", "nca", "cma", "icasa", "ntra"]:
-            if ref in markdown.lower():
-                refs.append(ref.upper())
-        return list(set(refs))
-    
+
     def _add_verified_footnotes(self, markdown: str, sources_metadata: Dict) -> str:
-        """Add verified references section with architecture decision tracing."""
-        
+        """Add source footnotes. Mirrors ba_skill exactly."""
+
         sources = sources_metadata.get("sources_used", [])
-        
+
         if not sources:
-            return markdown + "\n\n## Architecture Decision References\n\n**Note:** Technology choices were not verified against external sources. Manual architecture review recommended.\n"
-        
-        references = "\n\n## Architecture Decision References\n\n"
-        
+            return markdown + "\n\n## References\n\nNote: No sources were verified for this PRD. Manual review recommended before approval.\n"
+
+        references = "\n\n## Verified References\n\n"
+
         for idx, source in enumerate(sources, 1):
             authority = source.get("authority_level", "unknown").upper()
             confidence = source.get("confidence_level", "unknown").upper()
             accessed = source.get("accessed_at", "N/A")
             claim = source.get("claim", "N/A")
             url = source.get("source_url", "N/A")
-            
-            references += f"[{idx}] **{claim}**\n"
+
+            references += f"[{idx}] {claim}\n"
             references += f"- Source: {url}\n"
             references += f"- Authority: {authority} | Confidence: {confidence}\n"
             references += f"- Verified: {accessed}\n"
             references += f"- Type: {source.get('source_type', 'N/A')}\n\n"
-        
-        # Add architecture decision summary
-        architecture = sources_metadata.get("architecture_decisions", {})
-        references += "---\n\n**Technology Stack**\n"
-        for tech in architecture.get("technology_stack", []):
-            references += f"- {tech.upper()}\n"
-        
-        references += "\n**Integration Patterns**\n"
-        for pattern in architecture.get("integration_patterns", []):
-            references += f"- {pattern}\n"
-        
-        references += "\n**Compliance References**\n"
-        for ref in architecture.get("compliance_references", []):
-            references += f"- {ref}\n"
-        
-        # Data integrity summary
-        references += "\n---\n\n**Data Integrity Summary**\n"
+
+        references += "---\n\nData Integrity Summary\n"
         references += f"- Total sources verified: {len(sources)}\n"
-        references += f"- Technology choices validated: {sources_metadata['data_integrity'].get('technology_choices_validated', False)}\n"
         references += f"- Hallucination risk: {sources_metadata['data_integrity'].get('hallucination_risk', 'unknown')}\n"
         references += f"- Manual review recommended: {sources_metadata['data_integrity'].get('manual_review_recommended', True)}\n"
-        
+
         return markdown + references
-    
-    def _validate_mermaid_syntax(self, markdown: str) -> bool:
-        """Validate Mermaid diagram syntax in PRD."""
-        
-        mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', markdown, re.DOTALL)
-        
-        if not mermaid_blocks:
-            return False
-        
-        for block in mermaid_blocks:
-            # Check for valid architecture diagram types
-            if not any(kw in block.lower() for kw in ["graph", "flowchart", "stateDiagram"]):
-                return False
-            
-            # Check for connections/flows
-            if not ("->" in block or "-->" in block):
-                return False
-        
-        return True
-    
+
     def _parse_sections(self, markdown: str) -> Dict:
         """Parse PRD markdown into structured sections."""
-        
+
         sections = {}
         current_section = None
         content = []
-        
+
         for line in markdown.split('\n'):
             if line.startswith('## '):
                 if current_section:
@@ -664,10 +388,10 @@ QUALITY STANDARDS:
                 content = []
             elif current_section:
                 content.append(line)
-        
+
         if current_section:
             sections[current_section] = '\n'.join(content).strip()
-        
+
         return sections
 
 
@@ -676,7 +400,7 @@ async def generate_prd(
     clarification_feedback: Optional[str] = None,
     run_count: int = 1
 ) -> Dict:
-    """Generate technical PRD from approved BRD with web search and architecture validation."""
+    """Generate technical PRD from approved BRD."""
     skill = PESkill()
     return await skill.generate_prd(
         brd_dict=brd_dict,

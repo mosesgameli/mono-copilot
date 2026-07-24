@@ -3,7 +3,7 @@ Business Analyst Skill - BRD Generation with Web Search + Source Verification + 
 
 Implements real web search for regulatory compliance and market data.
 Uses ResearchService for source verification against authorized whitelist.
-Generates Mermaid diagrams only when problem complexity warrants them.
+Generates Mermaid diagrams when problem involves multiple integrations or stakeholders.
 
 Specific process per meeting notes:
 1. Analyze CURRENT PROCESS FLOW (customer journey, stakeholder activities, system logs)
@@ -13,7 +13,7 @@ Specific process per meeting notes:
 5. Define INTEGRATION ARCHITECTURE (system A ↔ system B, protocols, APIs)
 6. Define EXCEPTION MANAGEMENT (failure scenarios, error handling, recovery)
 7. Define BUSINESS RULES (validation, authorization, calculation rules)
-8. Generate MERMAID DIAGRAMS (ONLY when: >2 integrations OR >2 stakeholders OR complex exception flows)
+8. Generate MERMAID DIAGRAMS when problem has >1 integration or >2 stakeholders
 """
 
 from typing import Optional, Dict, List
@@ -40,12 +40,6 @@ class BASkill:
         self.max_search_attempts = 3
     
     def _system_prompt(self) -> str:
-        """
-        System prompt for BA workflow with web search instructions.
-        Focus: Process flows, bottlenecks, integration architecture, exception management.
-        
-        CRITICAL: Instructs agent to use web search for regulatory and market claims.
-        """
         return """You are a Business Analyst for enterprise MNO systems (Nigeria, Ghana, Kenya, South Africa, Egypt).
 
 YOUR BA PROCESS:
@@ -82,24 +76,18 @@ YOUR BA PROCESS:
    - Recovery action (e.g., "Show cached data, retry 3x")
    - System action (e.g., "Log incident, use fallback")
    - Support action (e.g., "Alert ops team")
-   
-   Example:
-   - CRM Unavailable: Detection=timeout>3s | Impact=agent sees warning | Recovery=cached data | Support=alert ops
 
 6. BUSINESS RULES
-   - Validation: [specific conditions] e.g., "Customer age >= 18, no active fraud flags"
-   - Authorization: [who can do what] e.g., "Agent sees offers for their territory only"
-   - Calculation: [formulas] e.g., "Score = (ARPU × 0.4) + (ChurnRisk × 0.3) + (UpsellProb × 0.3)"
-   - Retention: [compliance] e.g., "Logs retained 1 year per NCC requirement"
-   - Escalation: [when to escalate] e.g., "Offers > $500 need supervisor approval"
+   - Validation: [specific conditions]
+   - Authorization: [who can do what]
+   - Calculation: [formulas]
+   - Retention: [compliance requirements]
+   - Escalation: [when to escalate]
 
 7. MERMAID DIAGRAMS
-   ONLY generate diagrams if:
-   - Problem has >2 system integrations (show architecture diagram)
-   - Problem has >2 stakeholder types or complex workflow (show process flow)
-   - Problem has >2 exception scenarios (show exception decision tree)
-   
-   Do NOT generate diagrams for simple problems with single actor/single system.
+   When the problem involves more than one system integration or more than two stakeholders,
+   draw a Mermaid diagram inline in the document. Do not reference it as a future deliverable.
+   Draw it now, as part of the BRD.
 
 QUALITY STANDARDS FOR LARGE-SCALE MNO:
 - All bottlenecks MUST include metrics (seconds, percentages, volumes)
@@ -108,7 +96,6 @@ QUALITY STANDARDS FOR LARGE-SCALE MNO:
 - All business rules MUST be testable/enforceable
 - All regulatory references MUST be to real government sources (NCC, NCA, CMA, ICASA, NTRA)
 - All market data MUST cite GSMA, Statista, or industry analysts
-- Mermaid diagrams ONLY when complexity warrants
 
 BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
     
@@ -120,27 +107,13 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
         clarification_feedback: Optional[str] = None,
         run_count: int = 1
     ) -> Dict:
-        """
-        Generate BRD focused on process flow, integration architecture, exception management.
-        
-        Uses OpenAI web_search_20250305 tool for regulatory/market data verification.
-        Integrates ResearchService for source authority validation.
-        Smart Mermaid diagram generation based on problem complexity.
-        """
-        
         try:
             document_id = f"BRD-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
             
             user_prompt = self._build_user_prompt(
-                problem_statement,
-                segment,
-                context,
-                clarification_feedback,
-                run_count
+                problem_statement, segment, context, clarification_feedback, run_count
             )
             
-            # Call OpenAI to generate BRD
-            # Source verification handled by ResearchService after generation
             response = await self.client.chat.completions.create(
                 model=self.model,
                 max_tokens=4000,
@@ -150,7 +123,6 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
                 ]
             )
             
-            # Extract markdown from response (may include tool calls)
             markdown = self._extract_markdown_from_response(response)
             
             if not markdown:
@@ -162,33 +134,20 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
                     "quality_gates_passed": False
                 }
             
-            # Determine if Mermaid diagrams are needed based on problem complexity
-            needs_mermaid = self._should_generate_mermaid(
-                problem_statement,
-                context,
-                markdown
-            )
-            
-            # Check quality gates (stronger validation)
+            needs_mermaid = self._should_generate_mermaid(problem_statement, context, markdown)
             quality_gates = self._check_quality_gates(markdown, context, needs_mermaid)
             
-            # Extract and verify sources from BRD content
             sources_metadata = await self._extract_and_verify_sources(
-                markdown,
-                segment,
-                problem_statement
+                markdown, segment, problem_statement
             )
             
-            # Add verified sources as footnotes to markdown
             enhanced_markdown = self._add_verified_footnotes(markdown, sources_metadata)
             
-            # Validate Mermaid syntax if present
             if needs_mermaid and "```mermaid" in enhanced_markdown:
                 quality_gates["mermaid_diagrams"] = self._validate_mermaid_syntax(enhanced_markdown)
             else:
-                quality_gates["mermaid_diagrams"] = not needs_mermaid  # Pass if mermaid not needed
-            
-            # Save outputs
+                quality_gates["mermaid_diagrams"] = not needs_mermaid
+
             Path("projects").mkdir(exist_ok=True)
             brd_path = Path("projects") / "brd.md"
             brd_path.write_text(enhanced_markdown)
@@ -196,7 +155,6 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
             sources_path = Path("projects") / "sources.json"
             sources_path.write_text(json.dumps(sources_metadata, indent=2, default=str))
             
-            # Determine overall quality gate pass
             mandatory_gates = [
                 quality_gates.get("process_flow_analysis", False),
                 quality_gates.get("integration_architecture", False),
@@ -237,8 +195,6 @@ BE SPECIFIC. BE MEASURABLE. BE IMPLEMENTABLE. BE VERIFIED."""
         feedback: Optional[str],
         run_count: int
     ) -> str:
-        """Build prompt with web search instructions."""
-        
         prompt = f"""SEGMENT: {segment}
 
 PROCESS FLOW PROBLEM:
@@ -271,7 +227,7 @@ INSTRUCTIONS:
    - Integration architecture (all systems, protocols, latencies)
    - Exception management (detection, impact, recovery, support actions)
    - Business rules (validation, authorization, calculation, retention, escalation)
-4. Include Mermaid diagrams ONLY if complexity warrants them
+4. This problem involves multiple system integrations — draw a Mermaid process flow diagram inline now. Do not reference it as a future deliverable.
 5. Cite all sources clearly (government bodies, industry analysts)
 6. All metrics MUST be specific (not "fast", but "< 2 seconds")
 7. All regulations MUST be real (not hypothetical)
@@ -280,16 +236,10 @@ INSTRUCTIONS:
         return prompt
     
     def _extract_markdown_from_response(self, response) -> Optional[str]:
-        """
-        Extract markdown from OpenAI response.
-        Response may contain tool calls, but we care about the final text content.
-        """
-        
         if hasattr(response, 'choices') and len(response.choices) > 0:
             choice = response.choices[0]
             if hasattr(choice, 'message') and hasattr(choice.message, 'content'):
                 return choice.message.content
-        
         return None
     
     def _should_generate_mermaid(
@@ -298,45 +248,28 @@ INSTRUCTIONS:
         context: Optional[Dict],
         markdown: str
     ) -> bool:
-        """
-        Determine if Mermaid diagrams should be generated based on problem complexity.
-        
-        Criteria:
-        - >2 system integrations mentioned
-        - >2 stakeholder types (customer, agent, system)
-        - Complex exception flows (>2 failure scenarios)
-        - Complex process flow (>3 steps)
-        """
-        
         text = (problem_statement + " " + markdown).lower()
         
-        # Check for integration complexity
         integration_keywords = ["api", "integration", "system", "crm", "ivr", "database", "queue", "sync", "protocol"]
         integration_count = sum(1 for kw in integration_keywords if kw in text)
         
-        # Check for stakeholder complexity
         stakeholder_keywords = ["customer", "agent", "system", "operator", "admin", "manager"]
         stakeholder_count = sum(1 for kw in stakeholder_keywords if kw in text)
         
-        # Check for exception complexity
         exception_keywords = ["exception", "failure", "timeout", "error", "recovery", "fallback", "retry"]
         exception_count = sum(1 for kw in exception_keywords if kw in text)
         
-        # Check context for explicit integration list
         if context and "systems_involved" in context:
-            if len(context["systems_involved"]) > 2:
+            if len(context["systems_involved"]) > 1:
                 return True
         
-        # Trigger if complexity warrants diagrams
-        needs_diagram = (
+        return (
             integration_count >= 2 or
             stakeholder_count >= 2 or
-            exception_count >= 3 or
+            exception_count >= 2 or
             "workflow" in text or
-            "process" in text and "flow" in text
+            ("process" in text and "flow" in text)
         )
-        
-        return needs_diagram
     
     def _check_quality_gates(
         self,
@@ -344,39 +277,29 @@ INSTRUCTIONS:
         context: Optional[Dict],
         needs_mermaid: bool
     ) -> Dict[str, bool]:
-        """
-        Check quality gates with stronger validation.
-        Not just keyword matching, but actual content validation.
-        """
-        
         text = markdown.lower()
         lines = markdown.split('\n')
         
-        # Process Flow Analysis: mentions bottleneck with metrics
         process_flow = (
             ("bottleneck" in text or "current process" in text or "customer journey" in text) and
             any(re.search(r'\d+\s*(sec|second|minute|hour|%|percent|ms)', line, re.IGNORECASE) for line in lines)
         )
         
-        # Integration Architecture: mentions systems with protocols
         integration = (
             ("api" in text or "integration" in text or "system" in text) and
-            any(re.search(r'(rest|graphql|message|queue|sync|protocol)', line, re.IGNORECASE) for line in lines)
+            any(re.search(r'(rest|graphql|message|queue|sync|protocol|https|websocket)', line, re.IGNORECASE) for line in lines)
         )
         
-        # Exception Management: documents failure scenarios with actions
         exception = (
-            ("exception" in text or "failure" in text or "error handling" in text) and
-            any(re.search(r'(detection|impact|recovery|action|fallback|retry)', line, re.IGNORECASE) for line in lines)
+            ("exception" in text or "failure" in text or "error" in text or "unavailable" in text) and
+            any(re.search(r'(detection|impact|recovery|action|fallback|retry|alert|escalat)', line, re.IGNORECASE) for line in lines)
         )
         
-        # Business Rules: mentions validation, authorization, calculation rules
         rules = (
-            ("rule" in text or "validation" in text or "authorization" in text) and
-            any(re.search(r'(must|should|can only|required|approval|condition)', line, re.IGNORECASE) for line in lines)
+            ("rule" in text or "validation" in text or "authorization" in text or "must" in text) and
+            any(re.search(r'(must|should|can only|required|approval|condition|only)', line, re.IGNORECASE) for line in lines)
         )
         
-        # Mermaid Diagrams: if needed, check syntax
         mermaid = not needs_mermaid or "```mermaid" in markdown
         
         return {
@@ -393,33 +316,23 @@ INSTRUCTIONS:
         segment: str,
         problem_statement: str
     ) -> Dict:
-        """
-        Extract potential regulatory and market claims from BRD.
-        Verify each claim using ResearchService against authorized sources.
-        Build comprehensive sources.json with verification metadata.
-        """
-        
         sources_used = []
         
-        # Extract claims related to regulatory bodies and market data
         regulatory_keywords = ["ncc", "nca", "cma", "icasa", "ntra", "compliance", "regulation", "requirement"]
         market_keywords = ["gsma", "statista", "gartner", "market", "arpu", "churn", "coverage"]
         
         text_lower = markdown.lower()
         problem_lower = problem_statement.lower()
         
-        # For each keyword, search and verify
         for keyword in regulatory_keywords + market_keywords:
             if keyword in text_lower or keyword in problem_lower:
                 search_result = await self.research_service.search_and_verify(keyword, segment)
-                
                 if search_result.get("verified_sources"):
                     for source in search_result["verified_sources"]:
                         sources_used.append(source)
         
-        # Also search for specific claims in the markdown (sentences with specific metrics/assertions)
         sentences = re.split(r'(?<=[.!?])\s+', markdown)
-        for sentence in sentences[:10]:  # Check first 10 sentences for efficiency
+        for sentence in sentences[:10]:
             if any(kw in sentence.lower() for kw in regulatory_keywords + market_keywords):
                 search_result = await self.research_service.search_and_verify(sentence, segment)
                 if search_result.get("verified_sources"):
@@ -427,7 +340,6 @@ INSTRUCTIONS:
                         if source not in sources_used:
                             sources_used.append(source)
         
-        # Build comprehensive metadata
         sources_metadata = {
             "brd_id": f"BRD-{datetime.now().strftime('%Y%m%d')}",
             "project_name": segment,
@@ -449,18 +361,11 @@ INSTRUCTIONS:
         return sources_metadata
     
     def _add_verified_footnotes(self, markdown: str, sources_metadata: Dict) -> str:
-        """
-        Add footnotes and references section with verified sources.
-        Format: [1] claim [source] verified date | authority | confidence
-        """
-        
         sources = sources_metadata.get("sources_used", [])
         
         if not sources:
-            # No verified sources - add note
-            return markdown + "\n\n## References\n\n**Note:** No sources were verified for this BRD. Manual review recommended before approval.\n"
+            return markdown + "\n\n## References\n\nNote: No sources were verified for this BRD. Manual review recommended before approval.\n"
         
-        # Add verified references section
         references = "\n\n## Verified References\n\n"
         
         for idx, source in enumerate(sources, 1):
@@ -470,14 +375,13 @@ INSTRUCTIONS:
             claim = source.get("claim", "N/A")
             url = source.get("source_url", "N/A")
             
-            references += f"[{idx}] **{claim}**\n"
+            references += f"[{idx}] {claim}\n"
             references += f"- Source: {url}\n"
             references += f"- Authority: {authority} | Confidence: {confidence}\n"
             references += f"- Verified: {accessed}\n"
             references += f"- Type: {source.get('source_type', 'N/A')}\n\n"
         
-        # Add data integrity note
-        references += "---\n\n**Data Integrity Summary**\n"
+        references += "---\n\nData Integrity Summary\n"
         references += f"- Total sources verified: {len(sources)}\n"
         references += f"- Hallucination risk: {sources_metadata['data_integrity'].get('hallucination_risk', 'unknown')}\n"
         references += f"- Manual review recommended: {sources_metadata['data_integrity'].get('manual_review_recommended', True)}\n"
@@ -485,30 +389,20 @@ INSTRUCTIONS:
         return markdown + references
     
     def _validate_mermaid_syntax(self, markdown: str) -> bool:
-        """
-        Validate Mermaid diagram syntax.
-        Check for basic structure and valid keywords.
-        """
-        
         mermaid_blocks = re.findall(r'```mermaid\n(.*?)\n```', markdown, re.DOTALL)
         
         if not mermaid_blocks:
             return False
         
         for block in mermaid_blocks:
-            # Check for required diagram keywords
-            if not any(kw in block.lower() for kw in ["graph", "flowchart", "sequenceDiagram", "classDiagram", "stateDiagram"]):
+            if not any(kw in block.lower() for kw in ["graph", "flowchart", "sequencediagram", "classdiagram", "statediagram"]):
                 return False
-            
-            # Basic syntax check
             if not ("->" in block or "-->" in block or ":" in block):
                 return False
         
         return True
     
     def _parse_sections(self, markdown: str) -> Dict:
-        """Parse BRD markdown into structured sections."""
-        
         sections = {}
         current_section = None
         content = []
@@ -535,7 +429,7 @@ async def generate_brd(
     clarification_feedback: Optional[str] = None,
     run_count: int = 1
 ) -> Dict:
-    """Generate process flow BRD with web search, source verification, and smart Mermaid diagrams."""
+    """Generate process flow BRD with web search, source verification, and Mermaid diagrams."""
     skill = BASkill()
     return await skill.generate_brd(
         problem_statement=problem_statement,
